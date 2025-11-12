@@ -1,10 +1,39 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
+import 'package:window_manager/window_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/gestures.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Window.initialize();
-  await Window.setEffect(effect: WindowEffect.mica, dark: true);
+
+  // Initialize window_manager first
+  await windowManager.ensureInitialized();
+
+  // Load saved window preferences
+  final prefs = await SharedPreferences.getInstance();
+  final savedWidth = prefs.getDouble('window_width') ?? 1000.0;
+  final savedHeight = prefs.getDouble('window_height') ?? 700.0;
+  final savedX = prefs.getDouble('window_x');
+  final savedY = prefs.getDouble('window_y');
+
+  WindowOptions windowOptions = WindowOptions(
+    size: Size(savedWidth, savedHeight),
+    minimumSize: const Size(400, 600),
+    center: savedX == null || savedY == null,
+    // titleBarStyle: TitleBarStyle.hidden,
+  );
+
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await Window.initialize();
+    await Window.setEffect(effect: WindowEffect.mica, dark: true);
+    if (savedX != null && savedY != null) {
+      await windowManager.setPosition(Offset(savedX, savedY));
+    }
+    await windowManager.show();
+    await windowManager.focus();
+  });
+
   runApp(const MyApp());
 }
 
@@ -32,6 +61,8 @@ class MyApp extends StatelessWidget {
         acrylicBackgroundColor: Colors.transparent,
         navigationPaneTheme: NavigationPaneThemeData(
           backgroundColor: Colors.transparent,
+          animationDuration: const Duration(milliseconds: 200),
+          animationCurve: Curves.easeInOutCubic,
         ),
       ),
       home: const MyHomePage(title: 'Media Player'),
@@ -57,8 +88,37 @@ class MyHomePage extends StatefulWidget {
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
+class _MyHomePageState extends State<MyHomePage> with WindowListener {
   int _selectedIndex = 0;
+  final ScrollController _gridController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowResize() async {
+    final size = await windowManager.getSize();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('window_width', size.width);
+    await prefs.setDouble('window_height', size.height);
+  }
+
+  @override
+  void onWindowMove() async {
+    final position = await windowManager.getPosition();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('window_x', position.dx);
+    await prefs.setDouble('window_y', position.dy);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,14 +126,66 @@ class _MyHomePageState extends State<MyHomePage> {
       children: [
         Expanded(
           child: NavigationView(
+            // appBar: NavigationAppBar(
+            //   height: 40,
+            //   automaticallyImplyLeading: true,
+            //   leading: DragToMoveArea(
+            //     child: Row(
+            //       children: const [
+            //         SizedBox(width: 15),
+            //         Icon(WindowsIcons.music_note, size: 16),
+            //         SizedBox(width: 15),
+            //       ],
+            //     ),
+            //   ),
+            //   title: const DragToMoveArea(
+            //     child: Align(
+            //       alignment: AlignmentDirectional.centerStart,
+            //       child: Text('Music Player'),
+            //     ),
+            //   ),
+            //   actions: Row(
+            //     mainAxisAlignment: MainAxisAlignment.end,
+            //     children: [
+            //       WindowCaptionButton.minimize(
+            //         brightness: Brightness.dark,
+            //         onPressed: () async {
+            //           await windowManager.minimize();
+            //         },
+            //       ),
+            //       WindowCaptionButton.maximize(
+            //         brightness: Brightness.dark,
+            //         onPressed: () async {
+            //           bool isMaximized = await windowManager.isMaximized();
+            //           if (isMaximized) {
+            //             await windowManager.unmaximize();
+            //           } else {
+            //             await windowManager.maximize();
+            //           }
+            //         },
+            //       ),
+            //       WindowCaptionButton.close(
+            //         brightness: Brightness.dark,
+            //         onPressed: () async {
+            //           await windowManager.close();
+            //         },
+            //       ),
+            //     ],
+            //   ),
+            // ),
+            
             paneBodyBuilder: (item, child) {
-              return Container(color: const Color(0x4D333333), child: child);
+              return Container(
+                color: const Color(0x4D333333),
+                child: child,
+              );
             },
             pane: NavigationPane(
               indicator: const StickyNavigationIndicator(),
               selected: _selectedIndex,
               onChanged: (index) => setState(() => _selectedIndex = index),
-              displayMode: PaneDisplayMode.open,
+              displayMode: PaneDisplayMode.auto,
+              toggleable: true,
               autoSuggestBox: Builder(
                 builder: (context) {
                   return SizedBox(
@@ -88,7 +200,7 @@ class _MyHomePageState extends State<MyHomePage> {
                               Colors.transparent,
                             ),
                           ),
-                          icon: const WindowsIcon(FluentIcons.search),
+                          icon: const Icon(WindowsIcons.search),
                           onPressed: null,
                         ),
                       ),
@@ -96,38 +208,38 @@ class _MyHomePageState extends State<MyHomePage> {
                   );
                 },
               ),
-              autoSuggestBoxReplacement: const Icon(FluentIcons.search),
+              autoSuggestBoxReplacement: const Icon(WindowsIcons.search),
               items: [
                 PaneItem(
-                  icon: const Icon(FluentIcons.home),
+                  icon: const Icon(WindowsIcons.home),
                   title: const Text('Home'),
                   body: _buildHomeContent(),
                 ),
                 PaneItem(
-                  icon: const Icon(FluentIcons.music_in_collection),
+                  icon: const Icon(WindowsIcons.music_album),
                   title: const Text('Music library'),
                   body: _buildLibraryContent(),
                 ),
                 PaneItem(
-                  icon: const Icon(FluentIcons.video),
+                  icon: const Icon(WindowsIcons.video),
                   title: const Text('Video library'),
                   body: _buildVideoContent(),
                 ),
                 PaneItemSeparator(),
                 PaneItem(
-                  icon: const Icon(FluentIcons.playlist_music),
+                  icon: const Icon(WindowsIcons.music_info),
                   title: const Text('Play queue'),
                   body: _buildQueueContent(),
                 ),
                 PaneItem(
-                  icon: const Icon(FluentIcons.list),
+                  icon: const Icon(FluentIcons.playlist_music),
                   title: const Text('Playlists'),
                   body: _buildPlaylistsContent(),
                 ),
               ],
               footerItems: [
                 PaneItem(
-                  icon: const Icon(FluentIcons.settings),
+                  icon: const Icon(WindowsIcons.settings),
                   title: const Text('Settings'),
                   body: _buildSettingsContent(),
                 ),
@@ -135,14 +247,14 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
           ),
         ),
-        _buildPlaybackBar(),
+        RepaintBoundary(child: _buildPlaybackBar()),
       ],
     );
   }
 
   Widget _buildPlaybackBar() {
     return Container(
-      height: 120,
+      height: 110,
       decoration: BoxDecoration(
         color: const Color(0x4D333333),
         border: const Border(
@@ -157,7 +269,7 @@ class _MyHomePageState extends State<MyHomePage> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                Text('0:00:00', style: TextStyle(fontSize: 12)),
+                const Text('0:00:00', style: TextStyle(fontSize: 12)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Slider(
@@ -168,7 +280,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text('0:00:00', style: TextStyle(fontSize: 12)),
+                const Text('0:00:00', style: TextStyle(fontSize: 12)),
               ],
             ),
           ),
@@ -181,55 +293,64 @@ class _MyHomePageState extends State<MyHomePage> {
                   // Left: Track info
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 70,
-                          height: 70,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2B2B2B),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                              color: const Color(0x33FFFFFF),
-                              width: 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.3),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 300),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 70,
+                            height: 70,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2B2B2B),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: const Color(0x33FFFFFF),
+                                width: 1,
                               ),
-                            ],
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x4D000000),
+                                  blurRadius: 4,
+                                  offset: Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: Icon(
+                              WindowsIcons.music_note,
+                              size: 20,
+                              color: Colors.grey[100],
+                            ),
                           ),
-                          child: Icon(
-                            FluentIcons.music_note,
-                            size: 20,
-                            color: Colors.grey[100],
+                          const SizedBox(width: 12),
+                          Flexible(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Time',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  'Hans Zimmer • Inception (Music from the Motion Picture)',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[120],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Time',
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            Text(
-                              'Hans Zimmer • Inception (Music from the Motion Picture)',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[120],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                   // Center: Playback controls
@@ -243,7 +364,7 @@ class _MyHomePageState extends State<MyHomePage> {
                         ),
                         const SizedBox(width: 4),
                         IconButton(
-                          icon: const Icon(FluentIcons.previous, size: 16),
+                          icon: const Icon(WindowsIcons.previous, size: 16),
                           onPressed: () {},
                         ),
                         const SizedBox(width: 8),
@@ -257,7 +378,8 @@ class _MyHomePageState extends State<MyHomePage> {
                               decoration: BoxDecoration(
                                 // color: Color(0xFF60CDFF),
                                 shape: BoxShape.circle,
-                                border: Border.all(color: Colors.blue, width: 4),
+                                border:
+                                    Border.all(color: Colors.blue, width: 4),
                               ),
                               child: const Center(
                                 child: Icon(
@@ -271,12 +393,12 @@ class _MyHomePageState extends State<MyHomePage> {
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(FluentIcons.next, size: 16),
+                          icon: const Icon(WindowsIcons.next, size: 16),
                           onPressed: () {},
                         ),
                         const SizedBox(width: 4),
                         IconButton(
-                          icon: const Icon(FluentIcons.repeat_all, size: 16),
+                          icon: const Icon(WindowsIcons.repeat_all, size: 16),
                           onPressed: () {},
                         ),
                       ],
@@ -289,22 +411,22 @@ class _MyHomePageState extends State<MyHomePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         IconButton(
-                          icon: const Icon(FluentIcons.volume3, size: 16),
+                          icon: const Icon(WindowsIcons.volume3, size: 16),
                           onPressed: () {},
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(FluentIcons.full_screen, size: 16),
+                          icon: const Icon(WindowsIcons.full_screen, size: 16),
                           onPressed: () {},
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(FluentIcons.refresh, size: 16),
+                          icon: const Icon(WindowsIcons.refresh, size: 16),
                           onPressed: () {},
                         ),
                         const SizedBox(width: 8),
                         IconButton(
-                          icon: const Icon(FluentIcons.more, size: 16),
+                          icon: const Icon(WindowsIcons.more, size: 16),
                           onPressed: () {},
                         ),
                       ],
@@ -339,7 +461,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: const Center(
-                  child: Icon(FluentIcons.album, size: 80, color: Colors.white),
+                  child: Icon(WindowsIcons.music_album, size: 80, color: Colors.white),
                 ),
               ),
               const SizedBox(height: 16),
@@ -388,7 +510,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: const [
-                        Icon(FluentIcons.folder_open, size: 14),
+                        Icon(WindowsIcons.folder_open, size: 14),
                         SizedBox(width: 6),
                         Text('Add folder', style: TextStyle(fontSize: 13)),
                       ],
@@ -440,7 +562,6 @@ class _MyHomePageState extends State<MyHomePage> {
                         .map((e) => ComboBoxItem(value: e, child: Text(e)))
                         .toList(),
                     onChanged: (value) {},
-                    
                   ),
                   const SizedBox(width: 15),
                   ComboBox<String>(
@@ -475,18 +596,43 @@ class _MyHomePageState extends State<MyHomePage> {
             const SizedBox(height: 24),
             // Album grid
             Expanded(
-              child: GridView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 34),
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 200,
-                  childAspectRatio: 0.7,
-                  crossAxisSpacing: 15,
-                  mainAxisSpacing: 0,
-                ),
-                itemCount: 5,
-                itemBuilder: (context, index) {
-                  return _buildAlbumCard(index);
+              child: Listener(
+                onPointerSignal: (PointerSignalEvent signal) {
+                  if (signal is PointerScrollEvent) {
+                    _gridController.animateTo(
+                      _gridController.offset + signal.scrollDelta.dy * 2,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                    );
+                  }
                 },
+                child: SingleChildScrollView(
+                  controller: _gridController,
+                  // Keep left padding so content aligns with header,
+                  // but remove right padding so the scrollbar can sit
+                  // at the very edge of the window.
+                  padding: const EdgeInsets.only(left: 34, right: 0, top: 10, bottom: 10),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return ConstrainedBox(
+                        constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                        child: Wrap(
+                          spacing: 15,
+                          runSpacing: 20,
+                          children: List.generate(5, (index) {
+                            return SizedBox(
+                              width: 200,
+                              height: 260,
+                              child: RepaintBoundary(
+                                child: _buildAlbumCard(index),
+                              ),
+                            );
+                          }),
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ],
@@ -546,103 +692,39 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget _buildAlbumCard(int index) {
+    const baseUrl = 'https://contents.quanghuy.dev/';
     final albums = [
-      {'title': 'Thiên Thần Sa Ngã', 'artist': 'Bùi Lan Hương', 'image': null},
-      {
-        'title': 'Firewatch (Original Score)',
-        'artist': 'Chris Remo',
-        'image': null,
-      },
-      {
-        'title': 'By the Deep Sea',
-        'artist': 'Federico Albanese',
-        'image': null,
-      },
       {
         'title': 'Nữ Thần Mất Trăng (Mônangel)',
         'artist': 'Bùi Lan Hương',
-        'image': null,
+        'image': '${baseUrl}118CD291-17C4-4E0E-B51C-D8504A57E4D5_sk1.jpeg'
       },
       {
-        'title': 'Inception (Music from the Motion Picture)',
-        'artist': 'Hans Zimmer',
-        'image': null,
+        'title': 'The Human Era (Original Soundtrack)',
+        'artist': 'Epic Mountain',
+        'image': '${baseUrl}35F87834-A50F-40FB-9F76-E994D99D2656_sk1.jpeg'
+      },
+      {
+        'title': 'Thiên Thần Sa Ngã',
+        'artist': 'Bùi Lan Hương',
+        'image': '${baseUrl}60080A59-43AF-448E-99C1-85887045E5DC_sk1.jpeg'
+      },
+      {
+        'title': 'Lust for Life',
+        'artist': 'Lana Del Rey',
+        'image': '${baseUrl}73494CD3-B6D7-4931-8978-CD3E3C6EC7EF_sk1.jpeg'
+      },
+      {
+        'title': 'Firewatch (Original Soundtrack)',
+        'artist': 'Chris Remo',
+        'image': '${baseUrl}79EEE411-BF3C-4F63-BD5E-39C673FFA737_sk1.jpeg'
       },
     ];
 
     if (index >= albums.length) return const SizedBox.shrink();
 
     final album = albums[index];
-    return HoverButton(
-      onPressed: () {},
-      builder: (context, states) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AspectRatio(
-              aspectRatio: 1.0,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: album['image'] == null
-                      ? const Color(0xFF2B2B2B)
-                      : album['image'] == 'orange'
-                      ? const Color(0xFFFF8C00)
-                      : album['image'] == 'bw'
-                      ? const Color(0xFF666666)
-                      : const Color(0xFF4CAF50),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: const Color(0x33FFFFFF), width: 1),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: album['image'] == null
-                    ? Center(
-                        child: Icon(
-                          FluentIcons.album,
-                          size: 56,
-                          color: Colors.grey[80],
-                        ),
-                      )
-                    : null,
-              ),
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              // height: 34,
-              child: Text(
-                album['title'] as String,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  height: 1.3,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(height: 4),
-            SizedBox(
-              height: 16,
-              child: Text(
-                album['artist'] as String,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[120],
-                  height: 1.2,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        );
-      },
-    );
+    return AlbumCard(album: album);
   }
 
   Widget _buildVideoContent() {
@@ -671,7 +753,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    FluentIcons.music_note,
+                    WindowsIcons.music_note,
                     size: 80,
                     color: Colors.grey[100],
                   ),
@@ -726,6 +808,237 @@ class _MicaCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8.0),
         child: Padding(padding: const EdgeInsets.all(16.0), child: child),
+      ),
+    );
+  }
+}
+
+class AlbumCard extends StatefulWidget {
+  final Map<String, Object?> album;
+
+  const AlbumCard({super.key, required this.album});
+
+  @override
+  State<AlbumCard> createState() => _AlbumCardState();
+}
+
+class _AlbumCardState extends State<AlbumCard> {
+  bool _hover = false;
+
+  void _setHover(bool value) {
+    if (_hover == value) return;
+    setState(() {
+      _hover = value;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final album = widget.album;
+    return MouseRegion(
+      onEnter: (_) => _setHover(true),
+      onExit: (_) => _setHover(false),
+      child: GestureDetector(
+        onTap: () {},
+        child: Stack(
+          children: [
+            // Base content (image + title + artist) wrapped in AnimatedContainer
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              decoration: BoxDecoration(
+                // keep the base container transparent; we'll draw a subtle
+                // backdrop overlay separately so the thumbnail doesn't get fully darkened
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                AspectRatio(
+                  aspectRatio: 1.0,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2B2B2B),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: const Color(0x33FFFFFF), width: 1),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x4D000000),
+                              blurRadius: 4,
+                              offset: Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              // Placeholder icon underneath while the network image loads
+                              Center(
+                                child: Icon(
+                                  WindowsIcons.music_album,
+                                  size: 56,
+                                  color: Colors.grey[80],
+                                ),
+                              ),
+                              if (album['image'] is String)
+                                Positioned.fill(
+                                  child: Image.network(
+                                    album['image'] as String,
+                                    fit: BoxFit.cover,
+                                    // frameBuilder lets us fade the image when it first appears
+                                    frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                                      final bool loaded = frame != null || wasSynchronouslyLoaded;
+                                      return AnimatedOpacity(
+                                        opacity: loaded ? 1.0 : 0.0,
+                                        duration: const Duration(milliseconds: 300),
+                                        curve: Curves.easeInOut,
+                                        child: child,
+                                      );
+                                    },
+                                    // handle errors by keeping the placeholder visible
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return const SizedBox.shrink();
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      // subtle backdrop slightly larger than the image
+                      Center(
+                        child: AnimatedOpacity(
+                          opacity: _hover ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 160),
+                          curve: Curves.easeOut,
+                          child: FractionallySizedBox(
+                            widthFactor: 1.08,
+                            heightFactor: 1.08,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.06),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      // play button bottom-left
+                      Positioned(
+                        left: 8,
+                        bottom: 8,
+                        child: AnimatedOpacity(
+                          opacity: _hover ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 160),
+                          curve: Curves.easeOut,
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+                            ),
+                            child: IconButton(
+                              icon: const Icon(FluentIcons.play_solid, color: Colors.white, size: 13),
+                              onPressed: () {},
+                            ),
+                          ),
+                        ),
+                      ),
+                      // more button bottom-right
+                      Positioned(
+                        right: 8,
+                        bottom: 8,
+                        child: AnimatedOpacity(
+                          opacity: _hover ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 160),
+                          curve: Curves.easeOut,
+                          child: Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+                              color: Colors.black.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: IconButton(
+                              icon: const Icon(FluentIcons.more, color: Colors.white, size: 13),
+                              onPressed: () {},
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Combined title + artist block limited to 3 lines total.
+                RichText(
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    children: [
+                      TextSpan(
+                        text: '${album['title']}\n',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          height: 1.3,
+                        ),
+                      ),
+                      TextSpan(
+                        text: album['artist'] as String,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[120],
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            ),
+
+            // subtle full-card backdrop slightly larger than the card
+            Positioned.fill(
+              child: AnimatedOpacity(
+                opacity: _hover ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 160),
+                curve: Curves.easeOut,
+                child: IgnorePointer(
+                  // Always ignore pointer events on the visual backdrop so
+                  // underlying buttons remain clickable.
+                  ignoring: true,
+                  child: Center(
+                    child: FractionallySizedBox(
+                      widthFactor: 1.06,
+                      heightFactor: 1.06,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.1),
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
