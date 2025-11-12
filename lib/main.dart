@@ -1,40 +1,85 @@
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/gestures.dart';
+import 'package:provider/provider.dart';
+
+import 'pages/home_page.dart';
+import 'pages/library_page.dart';
+import 'pages/video_page.dart';
+import 'pages/queue_page.dart';
+import 'pages/playlists_page.dart';
+import 'pages/settings_page.dart';
+import 'pages/album_detail_page.dart';
+import 'data/albums.dart';
+import 'widgets/playback_bar.dart';
+import 'widgets/custom_app_bar.dart';
+import 'utils/platform_utils.dart';
+import 'utils/theme_provider.dart';
+import 'utils/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize window_manager first
-  await windowManager.ensureInitialized();
+  if (isWindowsPlatform()) {
+    // Initialize window_manager first
+    await windowManager.ensureInitialized();
 
-  // Load saved window preferences
-  final prefs = await SharedPreferences.getInstance();
-  final savedWidth = prefs.getDouble('window_width') ?? 1000.0;
-  final savedHeight = prefs.getDouble('window_height') ?? 700.0;
-  final savedX = prefs.getDouble('window_x');
-  final savedY = prefs.getDouble('window_y');
+    // Load saved window preferences
+    final prefs = await SharedPreferences.getInstance();
+    final savedWidth = prefs.getDouble('window_width') ?? 1000.0;
+    final savedHeight = prefs.getDouble('window_height') ?? 700.0;
+    final savedX = prefs.getDouble('window_x');
+    final savedY = prefs.getDouble('window_y');
 
-  WindowOptions windowOptions = WindowOptions(
-    size: Size(savedWidth, savedHeight),
-    minimumSize: const Size(400, 600),
-    center: savedX == null || savedY == null,
-    // titleBarStyle: TitleBarStyle.hidden,
+    WindowOptions windowOptions = WindowOptions(
+      size: Size(savedWidth, savedHeight),
+      minimumSize: const Size(400, 600),
+      center: savedX == null || savedY == null,
+      // titleBarStyle: TitleBarStyle.hidden,
+    );
+
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await Window.initialize();
+      // Determine whether to use the dark mica effect. Prefer a saved
+      // theme preference (stored by `ThemeProvider`) when available,
+      // otherwise fall back to the platform/system brightness.
+      final themeString = prefs.getString('theme_mode');
+      bool useDarkMica = true;
+      if (themeString != null) {
+        try {
+          final savedMode = ThemeMode.values.firstWhere((m) => m.toString() == themeString, orElse: () => ThemeMode.system);
+          if (savedMode == ThemeMode.light) {
+            useDarkMica = false;
+          } else if (savedMode == ThemeMode.dark) {
+            useDarkMica = true;
+          } else {
+            // system - fall through to platform brightness below
+            useDarkMica = WidgetsBinding.instance.window.platformBrightness == Brightness.dark;
+          }
+        } catch (_) {
+          useDarkMica = WidgetsBinding.instance.window.platformBrightness == Brightness.dark;
+        }
+      } else {
+        useDarkMica = WidgetsBinding.instance.window.platformBrightness == Brightness.dark;
+      }
+
+      await Window.setEffect(effect: WindowEffect.mica, dark: useDarkMica);
+      if (savedX != null && savedY != null) {
+        await windowManager.setPosition(Offset(savedX, savedY));
+      }
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
+
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => ThemeProvider(),
+      child: const MyApp(),
+    ),
   );
-
-  windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await Window.initialize();
-    await Window.setEffect(effect: WindowEffect.mica, dark: true);
-    if (savedX != null && savedY != null) {
-      await windowManager.setPosition(Offset(savedX, savedY));
-    }
-    await windowManager.show();
-    await windowManager.focus();
-  });
-
-  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
@@ -42,7 +87,61 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return FluentApp(
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        ShellRoute(
+          builder: (context, state, child) => FluentAppShell(child: child),
+          routes: [
+            GoRoute(path: '/', builder: (ctx, state) => const HomePage()),
+            GoRoute(path: '/library', builder: (ctx, state) => const LibraryPage()),
+            GoRoute(path: '/library/:id', builder: (ctx, state) {
+              // Extract the ':id' parameter in a way that's compatible with
+              // multiple go_router versions. Try several common property names
+              // and fall back to parsing the URI path segments.
+              String? idStr;
+              try {
+                final s = state as dynamic;
+                try {
+                  idStr = s.params?['id'] as String?;
+                } catch (_) {}
+                if (idStr == null) {
+                  try {
+                    idStr = s.pathParameters?['id'] as String?;
+                  } catch (_) {}
+                }
+                if (idStr == null) {
+                  try {
+                    idStr = s.namedParameters?['id'] as String?;
+                  } catch (_) {}
+                }
+                if (idStr == null) {
+                  try {
+                    final Uri? uri = (s.uri as Uri?);
+                    if (uri != null && uri.pathSegments.isNotEmpty) {
+                      idStr = uri.pathSegments.last;
+                    }
+                  } catch (_) {}
+                }
+              } catch (_) {}
+
+              final id = int.tryParse(idStr ?? '') ?? 0;
+              final Map<String, Object?> album =
+                  (albumsData.length > id) ? Map<String, Object?>.from(albumsData[id]) : <String, Object?>{};
+              return AlbumDetailPage(album: album);
+            }),
+            GoRoute(path: '/video', builder: (ctx, state) => const VideoPage()),
+            GoRoute(path: '/queue', builder: (ctx, state) => const QueuePage()),
+            GoRoute(path: '/playlists', builder: (ctx, state) => const PlaylistsPage()),
+            GoRoute(path: '/settings', builder: (ctx, state) => const SettingsPage()),
+          ],
+        ),
+      ],
+    );
+
+    return FluentApp.router(
+      routerConfig: router,
       title: 'Music Player',
       theme: FluentThemeData(
         accentColor: Colors.blue,
@@ -53,6 +152,7 @@ class MyApp extends StatelessWidget {
         navigationPaneTheme: NavigationPaneThemeData(
           backgroundColor: Colors.transparent,
         ),
+        extensions: [AppTheme(colors: AppTheme.lightColors)],
       ),
       darkTheme: FluentThemeData(
         brightness: Brightness.dark,
@@ -64,8 +164,285 @@ class MyApp extends StatelessWidget {
           animationDuration: const Duration(milliseconds: 200),
           animationCurve: Curves.easeInOutCubic,
         ),
+        extensions: [AppTheme(colors: AppTheme.darkColors)],
       ),
-      home: const MyHomePage(title: 'Media Player'),
+      themeMode: themeProvider.themeMode,
+      // The shell handles layout; set a placeholder home
+      // home: const MyHomePage(title: 'Media Player'),
+    );
+  }
+}
+
+class FluentAppShell extends StatelessWidget {
+  final Widget child;
+  const FluentAppShell({required this.child, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return FluentAppShellScaffold(child: child);
+  }
+}
+
+class FluentAppShellScaffold extends StatefulWidget {
+  final Widget child;
+  const FluentAppShellScaffold({required this.child, super.key});
+
+  @override
+  State<FluentAppShellScaffold> createState() => _FluentAppShellScaffoldState();
+}
+
+class _FluentAppShellScaffoldState extends State<FluentAppShellScaffold> with WindowListener {
+  // left-over from earlier experiment; not required by this fluent_ui version
+  // so keep no key here.
+  // final GlobalKey _paneKey = GlobalKey();
+
+    // Cache the NavigationPane templates to avoid rebuilding them on every
+    // `build`. This reduces GC churn and unnecessary widget allocations.
+    late final List<dynamic> _itemTemplates = [
+      PaneItem(key: const ValueKey('/'), icon: const Icon(WindowsIcons.home), title: const Text('Home'), body: const SizedBox.shrink()),
+      PaneItem(key: const ValueKey('/library'), icon: const Icon(WindowsIcons.music_album), title: const Text('Music library'), body: const SizedBox.shrink()),
+      PaneItem(key: const ValueKey('/video'), icon: const Icon(WindowsIcons.video), title: const Text('Video library'), body: const SizedBox.shrink()),
+      PaneItemSeparator(),
+      PaneItem(key: const ValueKey('/queue'), icon: const Icon(WindowsIcons.music_info), title: const Text('Play queue'), body: const SizedBox.shrink()),
+      PaneItem(key: const ValueKey('/playlists'), icon: const Icon(FluentIcons.playlist_music), title: const Text('Playlists'), body: const SizedBox.shrink()),
+    ];
+
+    late final List<dynamic> _footerTemplates = [
+      PaneItemSeparator(),
+      PaneItem(key: const ValueKey('/settings'), icon: const Icon(WindowsIcons.settings), title: const Text('Settings'), body: const SizedBox.shrink()),
+    ];
+    // Memoized mapped items (built once in didChangeDependencies so we can
+    // capture a valid BuildContext for navigation callbacks).
+    late List<NavigationPaneItem> _mappedItems;
+    late List<NavigationPaneItem> _mappedFooter;
+    bool _paneInitialized = false;
+    // Track ThemeProvider so we can react to theme changes and update
+    // the window mica effect to match the app's light/dark mode.
+    ThemeProvider? _themeProvider;
+
+    PaneItem _buildPaneItem(PaneItem item) {
+      return PaneItem(
+        key: item.key,
+        icon: item.icon,
+        title: item.title,
+        body: item.body,
+        onTap: () {
+          final path = (item.key as ValueKey).value as String;
+          final current = Router.of(context).routeInformationProvider?.value.uri.path ?? Uri.base.path;
+          if (current != path) {
+            context.go(path);
+          }
+          item.onTap?.call();
+        },
+      );
+    }
+
+    @override
+    void didChangeDependencies() {
+      super.didChangeDependencies();
+      // Subscribe to ThemeProvider changes so we can update the
+      // Windows mica effect live when the user toggles theme.
+      final provider = Provider.of<ThemeProvider>(context);
+      if (_themeProvider != provider) {
+        _themeProvider?.removeListener(_onThemeChanged);
+        _themeProvider = provider;
+        _themeProvider?.addListener(_onThemeChanged);
+      }
+      if (!_paneInitialized) {
+        _mappedItems = _itemTemplates.map<NavigationPaneItem>((e) {
+          if (e is PaneItemExpander) {
+            return PaneItemExpander(
+              key: e.key,
+              icon: e.icon,
+              title: e.title,
+              body: e.body,
+              items: e.items.map((item) {
+                if (item is PaneItem) return _buildPaneItem(item);
+                return item;
+              }).toList(),
+            );
+          }
+          if (e is PaneItem) return _buildPaneItem(e);
+          return e as NavigationPaneItem;
+        }).toList();
+
+        _mappedFooter = _footerTemplates.map<NavigationPaneItem>((e) {
+          if (e is PaneItemExpander) {
+            return PaneItemExpander(
+              key: e.key,
+              icon: e.icon,
+              title: e.title,
+              body: e.body,
+              items: e.items.map((item) {
+                if (item is PaneItem) return _buildPaneItem(item);
+                return item;
+              }).toList(),
+            );
+          }
+          if (e is PaneItem) return _buildPaneItem(e);
+          return e as NavigationPaneItem;
+        }).toList();
+
+        _paneInitialized = true;
+      }
+    }
+
+    Future<void> _onThemeChanged() async {
+      if (!isWindowsPlatform()) return;
+      try {
+        final mode = _themeProvider?.themeMode ?? ThemeMode.system;
+        bool useDarkMica;
+        if (mode == ThemeMode.light) {
+          useDarkMica = false;
+        } else if (mode == ThemeMode.dark) {
+          useDarkMica = true;
+        } else {
+          useDarkMica = WidgetsBinding.instance.window.platformBrightness == Brightness.dark;
+        }
+        await Window.setEffect(effect: WindowEffect.mica, dark: useDarkMica);
+      } catch (_) {}
+    }
+
+  @override
+  void initState() {
+    super.initState();
+    if (isWindowsPlatform()) {
+      windowManager.addListener(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (isWindowsPlatform()) {
+      windowManager.removeListener(this);
+    }
+    _themeProvider?.removeListener(_onThemeChanged);
+    super.dispose();
+  }
+
+  @override
+  void onWindowResize() async {
+    if (!isWindowsPlatform()) return;
+    final size = await windowManager.getSize();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('window_width', size.width);
+    await prefs.setDouble('window_height', size.height);
+  }
+
+  @override
+  void onWindowMove() async {
+    if (!isWindowsPlatform()) return;
+    final position = await windowManager.getPosition();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('window_x', position.dx);
+    await prefs.setDouble('window_y', position.dy);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Map navigation indices to routes used by GoRouter
+    // routes array matches the positions of the pane template list.
+    // We include an empty placeholder for the separator position so
+    // onChanged indexing doesn't go out of range.
+    final routes = [
+      '/',
+      '/library',
+      '/video',
+      '', // separator placeholder
+      '/queue',
+      '/playlists',
+    ];
+
+    // Resolve current location using multiple fallbacks to support several
+    // go_router versions. Prefer routerDelegate.currentConfiguration.location
+    // when available, otherwise fall back to Uri.base.path.
+    String location = '/';
+    try {
+      final router = GoRouter.of(context);
+      try {
+        final dynamicLoc = (router as dynamic).location as String?;
+        if (dynamicLoc != null && dynamicLoc.isNotEmpty) location = dynamicLoc;
+      } catch (_) {}
+      try {
+        final info = Router.of(context).routeInformationProvider?.value;
+        if (info != null) {
+          if (info.location.isNotEmpty) {
+            location = info.location;
+          }
+        }
+      } catch (_) {}
+      if (location.isEmpty) location = Uri.base.path;
+    } catch (_) {
+      location = Uri.base.path;
+    }
+
+    // Determine selected index by searching the memoized (items + footer)
+    // lists. Those are built once in didChangeDependencies to reduce
+    // allocations.
+    final combinedWithKeys = <NavigationPaneItem>[];
+    combinedWithKeys.addAll(_mappedItems.where((it) => it.key != null));
+    combinedWithKeys.addAll(_mappedFooter.where((it) => it.key != null));
+
+    int selectedIndex = combinedWithKeys.indexWhere((item) {
+      final key = item.key;
+      if (key is ValueKey) {
+        final path = key.value as String;
+        return location == path || location.startsWith(path + '/') || (path != '/' && location.startsWith(path));
+      }
+      return false;
+    });
+    if (selectedIndex < 0) selectedIndex = 0;
+
+    return Column(
+      children: [
+        Expanded(
+          child: NavigationView(
+            appBar: isMobilePlatform() ? createCustomAppBar() : null,
+            paneBodyBuilder: (item, child) {
+              return Container(
+                color: AppTheme.of(context).colors.backgroundOverlay,
+                child: widget.child,
+              );
+            },
+            pane: NavigationPane(
+              indicator: const StickyNavigationIndicator(),
+              selected: selectedIndex >= 0 ? selectedIndex : 0,
+              onChanged: (index) {
+                final path = routes[index];
+                GoRouter.of(context).go(path);
+              },
+              displayMode: PaneDisplayMode.auto,
+              toggleable: true,
+              autoSuggestBox: Builder(
+                builder: (context) {
+                  return SizedBox(
+                    height: 35,
+                    child: AutoSuggestBox(
+                      placeholder: "Search anything",
+                      items: const [],
+                      trailingIcon: IgnorePointer(
+                        child: IconButton(
+                          style: ButtonStyle(
+                            backgroundColor: WidgetStateProperty.all(
+                              Colors.transparent,
+                            ),
+                          ),
+                          icon: const Icon(WindowsIcons.search),
+                          onPressed: null,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              autoSuggestBoxReplacement: const Icon(WindowsIcons.search),
+              items: _mappedItems,
+              footerItems: _mappedFooter,
+            ),
+          ),
+        ),
+        RepaintBoundary(child: PlaybackBar()),
+      ],
     );
   }
 }
@@ -90,22 +467,26 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> with WindowListener {
   int _selectedIndex = 0;
-  final ScrollController _gridController = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    windowManager.addListener(this);
+    if (isWindowsPlatform()) {
+      windowManager.addListener(this);
+    }
   }
 
   @override
   void dispose() {
-    windowManager.removeListener(this);
+    if (isWindowsPlatform()) {
+      windowManager.removeListener(this);
+    }
     super.dispose();
   }
 
   @override
   void onWindowResize() async {
+    if (!isWindowsPlatform()) return;
     final size = await windowManager.getSize();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('window_width', size.width);
@@ -114,6 +495,7 @@ class _MyHomePageState extends State<MyHomePage> with WindowListener {
 
   @override
   void onWindowMove() async {
+    if (!isWindowsPlatform()) return;
     final position = await windowManager.getPosition();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('window_x', position.dx);
@@ -126,57 +508,10 @@ class _MyHomePageState extends State<MyHomePage> with WindowListener {
       children: [
         Expanded(
           child: NavigationView(
-            // appBar: NavigationAppBar(
-            //   height: 40,
-            //   automaticallyImplyLeading: true,
-            //   leading: DragToMoveArea(
-            //     child: Row(
-            //       children: const [
-            //         SizedBox(width: 15),
-            //         Icon(WindowsIcons.music_note, size: 16),
-            //         SizedBox(width: 15),
-            //       ],
-            //     ),
-            //   ),
-            //   title: const DragToMoveArea(
-            //     child: Align(
-            //       alignment: AlignmentDirectional.centerStart,
-            //       child: Text('Music Player'),
-            //     ),
-            //   ),
-            //   actions: Row(
-            //     mainAxisAlignment: MainAxisAlignment.end,
-            //     children: [
-            //       WindowCaptionButton.minimize(
-            //         brightness: Brightness.dark,
-            //         onPressed: () async {
-            //           await windowManager.minimize();
-            //         },
-            //       ),
-            //       WindowCaptionButton.maximize(
-            //         brightness: Brightness.dark,
-            //         onPressed: () async {
-            //           bool isMaximized = await windowManager.isMaximized();
-            //           if (isMaximized) {
-            //             await windowManager.unmaximize();
-            //           } else {
-            //             await windowManager.maximize();
-            //           }
-            //         },
-            //       ),
-            //       WindowCaptionButton.close(
-            //         brightness: Brightness.dark,
-            //         onPressed: () async {
-            //           await windowManager.close();
-            //         },
-            //       ),
-            //     ],
-            //   ),
-            // ),
-            
+            appBar: isMobilePlatform() ? createCustomAppBar() : null,
             paneBodyBuilder: (item, child) {
               return Container(
-                color: const Color(0x4D333333),
+                color: AppTheme.of(context).colors.backgroundOverlay,
                 child: child,
               );
             },
@@ -213,833 +548,42 @@ class _MyHomePageState extends State<MyHomePage> with WindowListener {
                 PaneItem(
                   icon: const Icon(WindowsIcons.home),
                   title: const Text('Home'),
-                  body: _buildHomeContent(),
+                  body: const HomePage(),
                 ),
                 PaneItem(
                   icon: const Icon(WindowsIcons.music_album),
                   title: const Text('Music library'),
-                  body: _buildLibraryContent(),
+                  body: const LibraryPage(),
                 ),
                 PaneItem(
                   icon: const Icon(WindowsIcons.video),
                   title: const Text('Video library'),
-                  body: _buildVideoContent(),
+                  body: const VideoPage(),
                 ),
                 PaneItemSeparator(),
                 PaneItem(
                   icon: const Icon(WindowsIcons.music_info),
                   title: const Text('Play queue'),
-                  body: _buildQueueContent(),
+                  body: const QueuePage(),
                 ),
                 PaneItem(
                   icon: const Icon(FluentIcons.playlist_music),
                   title: const Text('Playlists'),
-                  body: _buildPlaylistsContent(),
+                  body: const PlaylistsPage(),
                 ),
               ],
               footerItems: [
                 PaneItem(
                   icon: const Icon(WindowsIcons.settings),
                   title: const Text('Settings'),
-                  body: _buildSettingsContent(),
+                  body: const SettingsPage(),
                 ),
               ],
             ),
           ),
         ),
-        RepaintBoundary(child: _buildPlaybackBar()),
+        RepaintBoundary(child: PlaybackBar()),
       ],
-    );
-  }
-
-  Widget _buildPlaybackBar() {
-    return Container(
-      height: 110,
-      decoration: BoxDecoration(
-        color: const Color(0x4D333333),
-        border: const Border(
-          top: BorderSide(color: Color(0xFF3A3A3A), width: 1),
-        ),
-      ),
-      child: Column(
-        children: [
-          // Progress bar with time
-          Container(
-            height: 24,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Text('0:00:00', style: TextStyle(fontSize: 12)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Slider(
-                    value: 0.0,
-                    max: 100,
-                    onChanged: (value) {},
-                    style: const SliderThemeData(useThumbBall: false),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                const Text('0:00:00', style: TextStyle(fontSize: 12)),
-              ],
-            ),
-          ),
-          // Controls
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Stack(
-                children: [
-                  // Left: Track info
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 300),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 70,
-                            height: 70,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF2B2B2B),
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: const Color(0x33FFFFFF),
-                                width: 1,
-                              ),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Color(0x4D000000),
-                                  blurRadius: 4,
-                                  offset: Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              WindowsIcons.music_note,
-                              size: 20,
-                              color: Colors.grey[100],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Time',
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  'Hans Zimmer • Inception (Music from the Motion Picture)',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[120],
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  // Center: Playback controls
-                  Center(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(WindowsIcons.shuffle, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.previous, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 8),
-                        MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          child: GestureDetector(
-                            onTap: () {},
-                            child: Container(
-                              width: 55,
-                              height: 55,
-                              decoration: BoxDecoration(
-                                // color: Color(0xFF60CDFF),
-                                shape: BoxShape.circle,
-                                border:
-                                    Border.all(color: Colors.blue, width: 4),
-                              ),
-                              child: const Center(
-                                child: Icon(
-                                  WindowsIcons.play_solid,
-                                  size: 23,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.next, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.repeat_all, size: 16),
-                          onPressed: () {},
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Right: Volume and other controls
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(WindowsIcons.volume3, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.full_screen, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.refresh, size: 16),
-                          onPressed: () {},
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(WindowsIcons.more, size: 16),
-                          onPressed: () {},
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHomeContent() {
-    return ScaffoldPage.scrollable(
-      header: const PageHeader(title: Text('Home')),
-      children: [
-        _MicaCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: double.infinity,
-                height: 200,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Colors.orange, Colors.red],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Center(
-                  child: Icon(WindowsIcons.music_album, size: 80, color: Colors.white),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Now Playing',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'No track selected',
-                style: TextStyle(fontSize: 16, color: Colors.grey[130]),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLibraryContent() {
-    return ScaffoldPage(
-      content: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header with title and tabs
-            Padding(
-              padding: const EdgeInsets.fromLTRB(34, 0, 34, 0),
-              child: Row(
-                children: [
-                  const Text(
-                    'Music',
-                    style: TextStyle(fontSize: 42, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(width: 40),
-                  _buildTabBar(),
-                  const Spacer(),
-                  Button(
-                    onPressed: () {},
-                    style: ButtonStyle(
-                      padding: WidgetStateProperty.all(
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        Icon(WindowsIcons.folder_open, size: 14),
-                        SizedBox(width: 6),
-                        Text('Add folder', style: TextStyle(fontSize: 13)),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            // Action bar
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 34),
-              child: Row(
-                children: [
-                  FilledButton(
-                    onPressed: () {},
-                    child: Row(
-                      children: const [
-                        Icon(WindowsIcons.shuffle, size: 14),
-                        SizedBox(width: 8),
-                        Text('Shuffle and play'),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  const SizedBox(width: 8),
-                  ComboBox<String>(
-                    selectedItemBuilder: (context) {
-                      return ['Date added', 'Name', 'Artist', 'Album']
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 0,
-                                vertical: 6,
-                              ),
-                              child: Row(
-                                children: [
-                                  Text("Sort by:"),
-                                  SizedBox(width: 8),
-                                  Text(e, style: TextStyle(color: Colors.blue)),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList();
-                    },
-                    value: 'Date added',
-                    items: ['Date added', 'Name', 'Artist', 'Album']
-                        .map((e) => ComboBoxItem(value: e, child: Text(e)))
-                        .toList(),
-                    onChanged: (value) {},
-                  ),
-                  const SizedBox(width: 15),
-                  ComboBox<String>(
-                    selectedItemBuilder: (context) {
-                      return ['All genres', 'Rock', 'Pop', 'Jazz', 'Classical']
-                          .map(
-                            (e) => Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 0,
-                                vertical: 6,
-                              ),
-                              child: Row(
-                                children: [
-                                  Text("Genre:"),
-                                  SizedBox(width: 8),
-                                  Text(e, style: TextStyle(color: Colors.blue)),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList();
-                    },
-                    value: 'All genres',
-                    items: ['All genres', 'Rock', 'Pop', 'Jazz', 'Classical']
-                        .map((e) => ComboBoxItem(value: e, child: Text(e)))
-                        .toList(),
-                    onChanged: (value) {},
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-            // Album grid
-            Expanded(
-              child: Listener(
-                onPointerSignal: (PointerSignalEvent signal) {
-                  if (signal is PointerScrollEvent) {
-                    _gridController.animateTo(
-                      _gridController.offset + signal.scrollDelta.dy * 2,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeOut,
-                    );
-                  }
-                },
-                child: SingleChildScrollView(
-                  controller: _gridController,
-                  // Keep left padding so content aligns with header,
-                  // but remove right padding so the scrollbar can sit
-                  // at the very edge of the window.
-                  padding: const EdgeInsets.only(left: 34, right: 0, top: 10, bottom: 10),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      return ConstrainedBox(
-                        constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                        child: Wrap(
-                          spacing: 15,
-                          runSpacing: 20,
-                          children: List.generate(5, (index) {
-                            return SizedBox(
-                              width: 200,
-                              height: 260,
-                              child: RepaintBoundary(
-                                child: _buildAlbumCard(index),
-                              ),
-                            );
-                          }),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTabBar() {
-    final tabs = ['Songs', 'Albums', 'Artists'];
-    return Row(
-      children: tabs.map((tab) {
-        final isSelected = tab == 'Albums';
-        return Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  onTap: () {},
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      tab,
-                      style: TextStyle(
-                        fontSize: 18,
-                        color: isSelected ? Colors.white : Colors.grey[120],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 2),
-              if (isSelected)
-                Container(
-                  height: 3,
-                  width: 40,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF60CDFF),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-            ],
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  Widget _buildAlbumCard(int index) {
-    const baseUrl = 'https://contents.quanghuy.dev/';
-    final albums = [
-      {
-        'title': 'Nữ Thần Mất Trăng (Mônangel)',
-        'artist': 'Bùi Lan Hương',
-        'image': '${baseUrl}118CD291-17C4-4E0E-B51C-D8504A57E4D5_sk1.jpeg'
-      },
-      {
-        'title': 'The Human Era (Original Soundtrack)',
-        'artist': 'Epic Mountain',
-        'image': '${baseUrl}35F87834-A50F-40FB-9F76-E994D99D2656_sk1.jpeg'
-      },
-      {
-        'title': 'Thiên Thần Sa Ngã',
-        'artist': 'Bùi Lan Hương',
-        'image': '${baseUrl}60080A59-43AF-448E-99C1-85887045E5DC_sk1.jpeg'
-      },
-      {
-        'title': 'Lust for Life',
-        'artist': 'Lana Del Rey',
-        'image': '${baseUrl}73494CD3-B6D7-4931-8978-CD3E3C6EC7EF_sk1.jpeg'
-      },
-      {
-        'title': 'Firewatch (Original Soundtrack)',
-        'artist': 'Chris Remo',
-        'image': '${baseUrl}79EEE411-BF3C-4F63-BD5E-39C673FFA737_sk1.jpeg'
-      },
-    ];
-
-    if (index >= albums.length) return const SizedBox.shrink();
-
-    final album = albums[index];
-    return AlbumCard(album: album);
-  }
-
-  Widget _buildVideoContent() {
-    return ScaffoldPage.scrollable(
-      header: const PageHeader(title: Text('Video Library')),
-      children: [const Text('Your video collection will appear here')],
-    );
-  }
-
-  Widget _buildQueueContent() {
-    return ScaffoldPage.scrollable(
-      header: const PageHeader(title: Text('Play Queue')),
-      children: [const Text('Your play queue is empty')],
-    );
-  }
-
-  Widget _buildPlaylistsContent() {
-    return ScaffoldPage.scrollable(
-      header: const PageHeader(title: Text('Playlists')),
-      children: [
-        _MicaCard(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(48.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    WindowsIcons.music_note,
-                    size: 80,
-                    color: Colors.grey[100],
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    "You don't have any playlists",
-                    style: TextStyle(fontSize: 18),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: () {},
-                    child: const Text('Create a new playlist'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSettingsContent() {
-    return ScaffoldPage.scrollable(
-      header: const PageHeader(title: Text('Settings')),
-      children: [
-        _MicaCard(
-          child: const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text('Application settings'),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _MicaCard extends StatelessWidget {
-  final Widget child;
-
-  const _MicaCard({required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16.0),
-      decoration: BoxDecoration(
-        color: const Color(0x22FFFFFF),
-        borderRadius: BorderRadius.circular(8.0),
-        border: Border.all(color: const Color(0x33FFFFFF), width: 1.0),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8.0),
-        child: Padding(padding: const EdgeInsets.all(16.0), child: child),
-      ),
-    );
-  }
-}
-
-class AlbumCard extends StatefulWidget {
-  final Map<String, Object?> album;
-
-  const AlbumCard({super.key, required this.album});
-
-  @override
-  State<AlbumCard> createState() => _AlbumCardState();
-}
-
-class _AlbumCardState extends State<AlbumCard> {
-  bool _hover = false;
-
-  void _setHover(bool value) {
-    if (_hover == value) return;
-    setState(() {
-      _hover = value;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final album = widget.album;
-    return MouseRegion(
-      onEnter: (_) => _setHover(true),
-      onExit: (_) => _setHover(false),
-      child: GestureDetector(
-        onTap: () {},
-        child: Stack(
-          children: [
-            // Base content (image + title + artist) wrapped in AnimatedContainer
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              curve: Curves.easeOut,
-              decoration: BoxDecoration(
-                // keep the base container transparent; we'll draw a subtle
-                // backdrop overlay separately so the thumbnail doesn't get fully darkened
-                color: Colors.transparent,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                AspectRatio(
-                  aspectRatio: 1.0,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF2B2B2B),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: const Color(0x33FFFFFF), width: 1),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color(0x4D000000),
-                              blurRadius: 4,
-                              offset: Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              // Placeholder icon underneath while the network image loads
-                              Center(
-                                child: Icon(
-                                  WindowsIcons.music_album,
-                                  size: 56,
-                                  color: Colors.grey[80],
-                                ),
-                              ),
-                              if (album['image'] is String)
-                                Positioned.fill(
-                                  child: Image.network(
-                                    album['image'] as String,
-                                    fit: BoxFit.cover,
-                                    // frameBuilder lets us fade the image when it first appears
-                                    frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-                                      final bool loaded = frame != null || wasSynchronouslyLoaded;
-                                      return AnimatedOpacity(
-                                        opacity: loaded ? 1.0 : 0.0,
-                                        duration: const Duration(milliseconds: 300),
-                                        curve: Curves.easeInOut,
-                                        child: child,
-                                      );
-                                    },
-                                    // handle errors by keeping the placeholder visible
-                                    errorBuilder: (context, error, stackTrace) {
-                                      return const SizedBox.shrink();
-                                    },
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      // subtle backdrop slightly larger than the image
-                      Center(
-                        child: AnimatedOpacity(
-                          opacity: _hover ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 160),
-                          curve: Curves.easeOut,
-                          child: FractionallySizedBox(
-                            widthFactor: 1.08,
-                            heightFactor: 1.08,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.06),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      // play button bottom-left
-                      Positioned(
-                        left: 8,
-                        bottom: 8,
-                        child: AnimatedOpacity(
-                          opacity: _hover ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 160),
-                          curve: Curves.easeOut,
-                          child: Container(
-                            width: 30,
-                            height: 30,
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
-                            ),
-                            child: IconButton(
-                              icon: const Icon(FluentIcons.play_solid, color: Colors.white, size: 13),
-                              onPressed: () {},
-                            ),
-                          ),
-                        ),
-                      ),
-                      // more button bottom-right
-                      Positioned(
-                        right: 8,
-                        bottom: 8,
-                        child: AnimatedOpacity(
-                          opacity: _hover ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 160),
-                          curve: Curves.easeOut,
-                          child: Container(
-                            width: 30,
-                            height: 30,
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
-                              color: Colors.black.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: IconButton(
-                              icon: const Icon(FluentIcons.more, color: Colors.white, size: 13),
-                              onPressed: () {},
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                // Combined title + artist block limited to 3 lines total.
-                RichText(
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  text: TextSpan(
-                    children: [
-                      TextSpan(
-                        text: '${album['title']}\n',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          height: 1.3,
-                        ),
-                      ),
-                      TextSpan(
-                        text: album['artist'] as String,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey[120],
-                          height: 1.2,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            ),
-
-            // subtle full-card backdrop slightly larger than the card
-            Positioned.fill(
-              child: AnimatedOpacity(
-                opacity: _hover ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 160),
-                curve: Curves.easeOut,
-                child: IgnorePointer(
-                  // Always ignore pointer events on the visual backdrop so
-                  // underlying buttons remain clickable.
-                  ignoring: true,
-                  child: Center(
-                    child: FractionallySizedBox(
-                      widthFactor: 1.06,
-                      heightFactor: 1.06,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.1),
-                            width: 1,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
